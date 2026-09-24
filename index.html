@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpeechText — расшифровка аудио в текст</title>
+  <meta name="description" content="Загрузите аудио и получите точную расшифровку речи. Редактируйте текст, скачивайте PDF и DOCX." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="preconnect" href="https://unpkg.com" crossorigin />
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin />
+  <link rel="preconnect" href="https://esm.sh" crossorigin />
+  <link rel="preconnect" href="https://huggingface.co" crossorigin />
+  <link rel="preconnect" href="https://cdn-lfs.huggingface.co" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Playfair+Display:wght@400;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" crossorigin />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
+  <!-- Тяжёлые библиотеки (wavesurfer/jspdf/html2canvas/docx) грузим лениво
+       после DOMContentLoaded — не блокируем первую отрисовку и прогрев модели.
+       jsdelivr отдаёт Cross-Origin-Resource-Policy (нужно для COEP isolation). -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.454.0/dist/umd/lucide.min.js" defer></script>
+  <script>
+    (function () {
+      function whenReady(fn) {
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn);
+        else fn();
+      }
+      function loadScriptOnce(src, check) {
+        if (check()) return Promise.resolve();
+        return new Promise(function (resolve) {
+          var s = document.createElement("script");
+          s.src = src;
+          s.async = true;
+          s.onload = s.onerror = function () { resolve(); };
+          document.head.appendChild(s);
+        });
+      }
+      whenReady(function () {
+        loadScriptOnce("https://cdn.jsdelivr.net/npm/lucide@0.454.0/dist/umd/lucide.min.js", function () { return !!window.lucide; })
+          .then(function () { if (window.lucide) lucide.createIcons(); });
+        // Prefetch в фоне, не блокируем interactive
+        setTimeout(function () {
+          loadScriptOnce("https://cdn.jsdelivr.net/npm/wavesurfer.js@7.8.6/dist/wavesurfer.min.js", function () { return typeof WaveSurfer !== "undefined"; });
+          loadScriptOnce("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js", function () { return !!(window.jspdf && window.jspdf.jsPDF); });
+          loadScriptOnce("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js", function () { return !!window.html2canvas; });
+          loadScriptOnce("https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js", function () { return !!window.docx; });
+        }, 800);
+      });
+    })();
+  </script>
+</head>
+<body>
+  <div class="bg-decor" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <div class="grid-lines"></div>
+  </div>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <button class="logo" id="logoLink" type="button" aria-label="На главную">
+        <span class="logo-icon"><i data-lucide="audio-lines"></i></span>
+        <span class="logo-text">Speech<span>Text</span></span>
+      </button>
+      <nav class="header-nav">
+        <button class="btn btn-ghost" id="btnNewFile" type="button">
+          <i data-lucide="folder-open"></i> Мои файлы
+        </button>
+        <button class="btn btn-ghost" id="btnHow" type="button">
+          <i data-lucide="circle-help"></i> Как работает
+        </button>
+        <button class="btn btn-primary" id="btnHeaderUpload">
+          <i data-lucide="upload"></i> Загрузить аудио
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero" id="hero">
+      <div class="hero-badge reveal">
+        <i data-lucide="sparkles"></i>
+        <span>Работает прямо в браузере · аудио не уходит на сервер</span>
+      </div>
+      <h1 class="hero-title reveal">
+        Превратите речь<br />
+        в <span class="gradient-text">точный текст</span>
+      </h1>
+      <p class="hero-sub reveal">
+        Загрузите аудио или видео — модель Whisper расшифрует всё сказанное.
+        Редактируйте текст и скачивайте в PDF, DOCX, TXT или HTML.
+      </p>
+
+      <div class="settings-bar reveal" id="settingsBar">
+        <div class="setting">
+          <label id="lblLang"><i data-lucide="languages"></i> Язык</label>
+          <select id="selLang" class="native-select" aria-labelledby="lblLang">
+            <option value="auto">Автоопределение</option>
+            <option value="russian" selected>Русский</option>
+            <option value="english">Английский</option>
+            <option value="ukrainian">Украинский</option>
+            <option value="kazakh">Казахский</option>
+            <option value="german">Немецкий</option>
+            <option value="french">Французский</option>
+            <option value="spanish">Испанский</option>
+            <option value="italian">Итальянский</option>
+            <option value="portuguese">Португальский</option>
+            <option value="polish">Польский</option>
+            <option value="turkish">Турецкий</option>
+            <option value="chinese">Китайский</option>
+            <option value="japanese">Японский</option>
+            <option value="arabic">Арабский</option>
+          </select>
+        </div>
+        <div class="setting">
+          <label id="lblModel"><i data-lucide="cpu"></i> Модель</label>
+          <select id="selModel" class="native-select" aria-labelledby="lblModel">
+            <option value="Xenova/whisper-tiny">Tiny — самая быстрая</option>
+            <option value="Xenova/whisper-base" selected>Base — быстро, рекомендуем</option>
+            <option value="Xenova/whisper-small">Small — точнее, но медленнее</option>
+          </select>
+        </div>
+        <div class="setting">
+          <label for="chkTimestamps"><i data-lucide="timer"></i> Тайм-коды</label>
+          <label class="switch">
+            <input type="checkbox" id="chkTimestamps" checked />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="dropzone reveal" id="dropzone" tabindex="0" role="button" aria-label="Загрузить аудиофайл">
+        <div class="dropzone-glow"></div>
+        <div class="dz-icon"><i data-lucide="file-audio"></i></div>
+        <h2 class="dz-title">Перетащите аудио сюда</h2>
+        <p class="dz-sub">или нажмите, чтобы выбрать файл</p>
+        <div class="dz-formats">
+          <span>MP3</span><span>WAV</span><span>M4A</span><span>OGG</span><span>WEBM</span><span>FLAC</span><span>MP4</span>
+        </div>
+        <input type="file" id="fileInput" accept="audio/*,video/mp4,video/webm,.mp3,.wav,.m4a,.ogg,.webm,.flac,.aac,.mp4,.wma,.opus" hidden />
+      </div>
+
+      <p class="privacy-note reveal">
+        <i data-lucide="shield-check"></i>
+        Файл обрабатывается на вашем устройстве — ничего не отправляется на сервер.
+      </p>
+    </section>
+
+    <section class="processing hidden" id="processing" aria-live="polite">
+      <div class="card processing-card">
+        <div class="spinner-ring">
+          <svg viewBox="0 0 100 100">
+            <circle class="ring-bg" cx="50" cy="50" r="44" />
+            <circle class="ring-fg" cx="50" cy="50" r="44" />
+          </svg>
+          <div class="spinner-icon"><i data-lucide="mic"></i></div>
+        </div>
+        <h2 id="procTitle">Готовим модель…</h2>
+        <p id="procSubtitle" class="muted">Первый запуск может занять время — качается модель распознавания.</p>
+        <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+        <div class="progress-meta">
+          <span id="progressLabel">0%</span>
+          <span id="progressDetail">Инициализация</span>
+        </div>
+        <div class="proc-time muted" id="procTime"></div>
+        <div class="proc-file">
+          <i data-lucide="music"></i>
+          <span id="procFileName">—</span>
+          <span id="procFileSize" class="muted"></span>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btnCancel" style="margin-top:18px">
+          <i data-lucide="x"></i> Отменить
+        </button>
+      </div>
+    </section>
+
+    <section class="editor-section hidden" id="editorSection">
+      <div class="editor-head reveal">
+        <div class="editor-head-left">
+          <div>
+            <div class="eyebrow"><i data-lucide="check-circle-2"></i> Расшифровка готова</div>
+            <h2 class="section-title">Редактируйте текст</h2>
+          </div>
+          <div class="file-chip" id="fileChip">
+            <i data-lucide="file-audio"></i>
+            <span class="chip-name" id="fileChipName">—</span>
+            <span class="chip-size" id="fileChipSize"></span>
+          </div>
+        </div>
+        <div class="editor-actions">
+          <button class="btn btn-ghost" id="btnReplaceFile" title="Загрузить другой файл"><i data-lucide="replace"></i> Другой файл</button>
+          <button class="btn btn-ghost" id="btnCopy"><i data-lucide="copy"></i> Копировать</button>
+          <div class="export-menu" id="exportMenu">
+            <button class="btn btn-ghost" id="btnExport" aria-haspopup="true" aria-expanded="false">
+              <i data-lucide="download"></i> Скачать <i data-lucide="chevron-down" class="btn-caret"></i>
+            </button>
+            <div class="export-dropdown" id="exportDropdown" role="menu">
+              <button type="button" role="menuitem" data-export="pdf"><i data-lucide="file-type-2"></i> PDF документ</button>
+              <button type="button" role="menuitem" data-export="docx"><i data-lucide="file-text"></i> DOCX (Word)</button>
+              <button type="button" role="menuitem" data-export="txt"><i data-lucide="file"></i> TXT текст</button>
+              <button type="button" role="menuitem" data-export="html"><i data-lucide="file-code-2"></i> HTML страница</button>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="btnFinish"><i data-lucide="party-popper"></i> Готово</button>
+        </div>
+      </div>
+
+      <div class="card player-card">
+        <button class="play-btn" id="btnPlay" aria-label="Воспроизвести">
+          <i data-lucide="play" id="playIcon"></i>
+        </button>
+        <div class="waveform-wrap"><div id="waveform"></div></div>
+        <div class="time-display">
+          <span id="curTime">0:00</span>
+          <span class="muted">/</span>
+          <span id="durTime">0:00</span>
+        </div>
+      </div>
+
+      <div class="card editor-card">
+        <div class="toolbar" id="toolbar">
+          <div class="tb-group">
+            <button class="tb-btn" data-cmd="undo" title="Отменить (Ctrl+Z)"><i data-lucide="undo-2"></i></button>
+            <button class="tb-btn" data-cmd="redo" title="Повторить (Ctrl+Y)"><i data-lucide="redo-2"></i></button>
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-group tb-font-group">
+            <select class="native-select" id="selFont" title="Шрифт">
+              <option value="Manrope" selected>Manrope</option>
+              <option value="Roboto">Roboto</option>
+              <option value="Georgia">Georgia</option>
+              <option value="Playfair Display">Playfair Display</option>
+              <option value="Times New Roman">Times New Roman</option>
+              <option value="Arial">Arial</option>
+              <option value="Verdana">Verdana</option>
+              <option value="Tahoma">Tahoma</option>
+              <option value="Trebuchet MS">Trebuchet MS</option>
+              <option value="Courier New">Courier New</option>
+              <option value="JetBrains Mono">JetBrains Mono</option>
+              <option value="Impact">Impact</option>
+              <option value="Palatino">Palatino</option>
+              <option value="Garamond">Garamond</option>
+              <option value="Comic Sans MS">Comic Sans MS</option>
+            </select>
+            <select class="native-select" id="selSize" title="Размер шрифта">
+              <option value="10px">10</option>
+              <option value="12px">12</option>
+              <option value="14px">14</option>
+              <option value="16px" selected>16</option>
+              <option value="18px">18</option>
+              <option value="20px">20</option>
+              <option value="24px">24</option>
+              <option value="28px">28</option>
+              <option value="32px">32</option>
+              <option value="36px">36</option>
+              <option value="48px">48</option>
+              <option value="60px">60</option>
+            </select>
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-group">
+            <button class="tb-btn tb-text" data-cmd="bold" title="Жирный (Ctrl+B)"><b>B</b></button>
+            <button class="tb-btn tb-text" data-cmd="italic" title="Курсив (Ctrl+I)"><i>I</i></button>
+            <button class="tb-btn tb-text" data-cmd="underline" title="Подчёркнутый (Ctrl+U)"><u>U</u></button>
+            <button class="tb-btn tb-text" data-cmd="strikeThrough" title="Зачёркнутый"><s>S</s></button>
+            <label class="tb-btn tb-color" title="Цвет текста">
+              <i data-lucide="palette"></i>
+              <input type="color" id="inpTextColor" value="#e2e8f0" />
+            </label>
+            <label class="tb-btn tb-color" title="Цвет выделения">
+              <i data-lucide="highlighter"></i>
+              <input type="color" id="inpHlColor" value="#fbbf24" />
+            </label>
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-group">
+            <button class="tb-btn" data-cmd="justifyLeft" title="По левому краю"><i data-lucide="align-left"></i></button>
+            <button class="tb-btn" data-cmd="justifyCenter" title="По центру"><i data-lucide="align-center"></i></button>
+            <button class="tb-btn" data-cmd="justifyRight" title="По правому краю"><i data-lucide="align-right"></i></button>
+            <button class="tb-btn" data-cmd="justifyFull" title="По ширине"><i data-lucide="align-justify"></i></button>
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-group">
+            <button class="tb-btn" data-cmd="insertUnorderedList" title="Маркированный список"><i data-lucide="list"></i></button>
+            <button class="tb-btn" data-cmd="insertOrderedList" title="Нумерованный список"><i data-lucide="list-ordered"></i></button>
+            <button class="tb-btn" data-cmd="formatBlock" data-val="blockquote" title="Цитата"><i data-lucide="quote"></i></button>
+            <button class="tb-btn" data-cmd="formatBlock" data-val="p" title="Обычный абзац"><i data-lucide="pilcrow"></i></button>
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-group">
+            <button class="tb-btn" data-cmd="removeFormat" title="Очистить форматирование"><i data-lucide="eraser"></i></button>
+          </div>
+          <div class="tb-spacer"></div>
+          <div class="tb-group tb-stats"><span id="wordCount">0 слов</span></div>
+        </div>
+
+        <div class="editor-body">
+          <div id="editor" class="editor" contenteditable="true" spellcheck="true" data-placeholder="Здесь появится текст расшифровки…"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="how" id="how-it-works">
+      <h2 class="section-title center reveal">Как это работает</h2>
+      <div class="steps">
+        <div class="step card reveal">
+          <div class="step-num">1</div>
+          <div class="step-icon"><i data-lucide="upload-cloud"></i></div>
+          <h3>Загрузите файл</h3>
+          <p>Перетащите аудио или видео. Файл остаётся на вашем устройстве.</p>
+        </div>
+        <div class="step card reveal">
+          <div class="step-num">2</div>
+          <div class="step-icon"><i data-lucide="brain-circuit"></i></div>
+          <h3>Модель слушает</h3>
+          <p>OpenAI Whisper распознаёт речь с высокой точностью — прямо в браузере.</p>
+        </div>
+        <div class="step card reveal">
+          <div class="step-num">3</div>
+          <div class="step-icon"><i data-lucide="pen-line"></i></div>
+          <h3>Редактируйте</h3>
+          <p>Шрифты, размер, жирность, цвет, списки — всё как в текстовом редакторе.</p>
+        </div>
+        <div class="step card reveal">
+          <div class="step-num">4</div>
+          <div class="step-icon"><i data-lucide="download"></i></div>
+          <h3>Сохраните</h3>
+          <p>Скачайте готовый документ: PDF, DOCX, TXT или HTML.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="logo small">
+        <span class="logo-icon"><i data-lucide="audio-lines"></i></span>
+        <span class="logo-text">Speech<span>Text</span></span>
+      </div>
+      <p class="muted">Расшифровка аудио в текст · Whisper AI · PDF и DOCX · Офлайн после первой загрузки</p>
+    </div>
+  </footer>
+
+  <div class="toasts" id="toasts"></div>
+  <audio id="audioEl" preload="metadata" hidden></audio>
+
+  <!-- Мои файлы -->
+  <div class="modal-backdrop hidden" id="filesModal" role="dialog" aria-modal="true" aria-labelledby="filesModalTitle">
+    <div class="modal card">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow"><i data-lucide="folder-open"></i> Мои файлы</div>
+          <h2 id="filesModalTitle" class="section-title">Выберите аудио</h2>
+        </div>
+        <button class="tb-btn" id="btnCloseFiles" type="button" title="Закрыть"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="btnPickFile" type="button">
+          <i data-lucide="upload"></i> Выбрать файл с компьютера
+        </button>
+        <p class="muted small-note">MP3, WAV, M4A, OGG, WEBM, FLAC, MP4 · до 500 МБ</p>
+      </div>
+      <div class="files-list-wrap">
+        <h3 class="files-list-title">Недавние в этой сессии</h3>
+        <div class="files-list" id="filesList">
+          <div class="files-empty muted" id="filesEmpty">
+            <i data-lucide="file-question"></i>
+            <span>Пока пусто — файлы появятся здесь после выбора</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Превью для экспорта PDF -->
+  <div id="pdfSource" class="pdf-source" aria-hidden="true">
+    <div class="pdf-inner" id="pdfInner"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
