@@ -1120,7 +1120,7 @@ async function detectDevice() {
       return "wasm";
     }
     const adapter = await withTimeout(
-      navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
+      navigator.gpu.requestAdapter(),
       2500,
       "WebGPU adapter"
     );
@@ -1138,12 +1138,22 @@ async function detectDevice() {
 
 async function loadPipeline(modelId, device, progress_callback) {
   const { pipeline } = await loadTransformers();
-  const dtype = device === "webgpu" ? "fp16" : "q8";
-  return pipeline("automatic-speech-recognition", modelId, {
-    dtype,
-    device,
-    progress_callback,
-  });
+  // fp16 быстрее, но не все карты его умеют → пробуем цепочку, остаёмся на GPU
+  const dtypes = device === "webgpu" ? ["fp16", "q8", "fp32"] : ["q8"];
+  let lastErr = null;
+  for (const dtype of dtypes) {
+    try {
+      return await pipeline("automatic-speech-recognition", modelId, {
+        dtype,
+        device,
+        progress_callback,
+      });
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[loadPipeline] ${device}/${dtype} failed:`, e?.message || e);
+    }
+  }
+  throw lastErr;
 }
 
 async function getTranscriber(modelId, gen) {
@@ -1203,7 +1213,7 @@ async function getTranscriber(modelId, gen) {
         );
       } catch (e) {
         if (device === "webgpu" && !dead()) {
-          console.warn("[WebGPU] fail, fallback wasm", e);
+          console.warn("[WebGPU] all dtypes failed, fallback wasm", e);
           device = "wasm";
           state.deviceLocked = "wasm";
           state.transcriber = null;
@@ -1218,6 +1228,7 @@ async function getTranscriber(modelId, gen) {
           throw e;
         }
       }
+      // dtype мог смениться (fp16→q8) — ключ кэша по device, не по dtype
       state.transcriberModel = `${modelId}::${device}`;
       state.transcriberDevice = device;
       setProgress(75, "Модель готова", device === "webgpu" ? "WebGPU · начинаем…" : "WASM · начинаем…");
